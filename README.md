@@ -12,7 +12,7 @@ Generic — works on any org. Auth is via the GitHub CLI's existing token.
 ## Status
 
 - [x] **Phase 1** — `fetch.py` data fetcher (local-clone based)
-- [ ] **Phase 2** — `viewer.html` interactive viewer
+- [x] **Phase 2** — `viewer.html` interactive viewer
 - [ ] **Phase 3** — polish (drill-down, exports, grouping)
 
 ## Quickstart
@@ -21,8 +21,11 @@ Generic — works on any org. Auth is via the GitHub CLI's existing token.
 gh auth login                            # if not already signed in
 cp aliases.example.json aliases.json     # optional: edit to merge identities
 python3 fetch.py --org <ORG_LOGIN>       # writes contributors.json
-# (Phase 2) open viewer.html in a browser
+python3 -m http.server 8765              # serve next to contributors.json
+open http://localhost:8765/viewer.html   # auto-loads contributors.json
 ```
+
+`viewer.html` also accepts a manual file pick when opened via `file://`.
 
 ## Phase 1: `fetch.py`
 
@@ -105,17 +108,37 @@ git identities via `aliases.json`.
 Uses `gh auth token`. Install [GitHub CLI](https://cli.github.com/) and run
 `gh auth login`. The token needs `repo` scope to read private org repos.
 
-## Phase 2 (planned)
+## Phase 2: `viewer.html`
 
-Single-file `viewer.html` that loads `contributors.json` and renders
-Plotly charts with:
+Single static file. No build step. Plotly via CDN. Auto-loads
+`contributors.json` if served over http(s); offers a file picker on
+`file://`.
 
-- Date range slider, repo multi-select, contributor multi-select / "top N"
-- Metric: commits / additions / deletions / net lines
-- Granularity: weekly / monthly / quarterly
-- Mode: stacked area / line / cumulative / heatmap
-- Bot exclusion toggle
-- Hover detail and click-to-filter
+Layout:
+
+- Combined chart (selected repos summed) at the top.
+- One smaller chart per repo below, ordered by activity in the window.
+
+Controls:
+
+- **Date range** — date pickers + quick buttons (All / 3y / 1y / 6m / 3m / 1m).
+- **Contributors** — multi-select ranked by total commits, with
+  `Exclude bots` toggle (regex covers `*[bot]`, `dependabot`, `renovate`,
+  `coderabbit`, `github-actions`, `copilot`, `aquafix`, etc.).
+- **Metrics** — multi-toggle: commits, additions, deletions, net lines,
+  PRs opened, PRs merged, issues opened. Each enabled metric renders as
+  its own subplot row (independent y-axis), so commit count and line
+  count don't fight for the same scale.
+- **File extensions** — multi-select; applies only to line metrics
+  (`additions` / `deletions` / `net lines`). Selecting only `.md`, for
+  example, surfaces docs activity vs code activity.
+- **Granularity** — weekly / monthly / quarterly.
+- **Mode** — stacked area / line / cumulative line.
+- **Repos** — multi-select with `Active only` shortcut (excludes
+  archived + zero-activity).
+
+Hover gives author + metric + date. Each contributor gets a stable
+color, shared across the combined chart and every per-repo chart.
 
 ## License
 

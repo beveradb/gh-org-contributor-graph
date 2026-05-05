@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>gh-org-contributor-graph</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2129;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #2f81f7;
+    --accent-hover: #58a6ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    padding: 12px 20px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    margin: 0; font-size: 16px; font-weight: 600;
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  header h1 small { color: var(--text-dim); font-weight: 400; font-size: 12px; }
+
+  #file-loader { padding: 20px; }
+  #file-loader input[type="file"] {
+    background: var(--panel-2); color: var(--text);
+    border: 1px dashed var(--border); padding: 8px; border-radius: 4px;
+  }
+
+  .controls {
+    background: var(--panel); border-bottom: 1px solid var(--border);
+    padding: 10px 20px; display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+  }
+  .ctrl { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .ctrl label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-dim);
+  }
+  .ctrl select, .ctrl input[type="text"], .ctrl input[type="date"] {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 8px; font-size: 13px;
+  }
+  .ctrl select:focus, .ctrl input:focus {
+    outline: none; border-color: var(--accent);
+  }
+  .ctrl select[multiple] { height: 80px; }
+
+  .ctrl .toggles {
+    display: flex; flex-wrap: wrap; gap: 4px;
+  }
+  .ctrl .toggles label {
+    text-transform: none; letter-spacing: 0; font-size: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 3px 8px; cursor: pointer; user-select: none;
+    color: var(--text);
+  }
+  .ctrl .toggles input { display: none; }
+  .ctrl .toggles input:checked + span { color: var(--accent-hover); font-weight: 500; }
+  .ctrl .toggles label:has(input:checked) {
+    border-color: var(--accent); background: rgba(47, 129, 247, 0.12);
+  }
+
+  .ctrl .quick {
+    display: flex; gap: 4px; flex-wrap: wrap;
+  }
+  .ctrl .quick button {
+    background: var(--panel-2); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 3px 8px; font-size: 12px; cursor: pointer;
+  }
+  .ctrl .quick button:hover { color: var(--text); border-color: var(--accent); }
+  .ctrl .quick button.active {
+    background: var(--accent); color: white; border-color: var(--accent);
+  }
+
+  .ctrl .row {
+    display: flex; gap: 4px;
+  }
+  .ctrl .row > * { flex: 1; min-width: 0; }
+
+  .ctrl button.action {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 4px 8px; font-size: 12px; cursor: pointer;
+  }
+  .ctrl button.action:hover { border-color: var(--accent); }
+
+  main { padding: 20px; }
+  .chart-card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px; margin-bottom: 16px; overflow: hidden;
+  }
+  .chart-card h2 {
+    margin: 0; padding: 12px 16px; font-size: 14px; font-weight: 600;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 8px;
+  }
+  .chart-card h2 small { color: var(--text-dim); font-weight: 400; font-size: 12px; }
+  .chart-card h2 a {
+    color: var(--text-dim); font-size: 12px; text-decoration: none;
+    margin-left: auto;
+  }
+  .chart-card h2 a:hover { color: var(--accent); }
+  .chart-card .plot { padding: 4px; }
+
+  .empty {
+    padding: 40px; text-align: center; color: var(--text-dim);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>gh-org-contributor-graph
+    <small id="org-info"></small>
+  </h1>
+</header>
+
+<div id="file-loader">
+  <p>Drop or pick <code>contributors.json</code> (output of <code>fetch.py</code>):</p>
+  <input type="file" id="file-input" accept=".json">
+</div>
+
+<div id="app" style="display:none;">
+  <div class="controls" id="controls">
+    <div class="ctrl">
+      <label>Date range</label>
+      <div class="row">
+        <input type="date" id="date-from">
+        <input type="date" id="date-to">
+      </div>
+      <div class="quick" id="date-quick">
+        <button data-range="all">All</button>
+        <button data-range="3y">3y</button>
+        <button data-range="1y">1y</button>
+        <button data-range="6m">6m</button>
+        <button data-range="3m">3m</button>
+        <button data-range="1m">1m</button>
+      </div>
+    </div>
+
+    <div class="ctrl">
+      <label>Contributors</label>
+      <select id="contributors" multiple></select>
+      <div class="row">
+        <button class="action" id="contrib-all">All</button>
+        <button class="action" id="contrib-none">None</button>
+      </div>
+      <label style="margin-top:4px; cursor:pointer;">
+        <input type="checkbox" id="exclude-bots" checked> Exclude bots
+      </label>
+    </div>
+
+    <div class="ctrl">
+      <label>Metrics</label>
+      <div class="toggles" id="metrics">
+        <label><input type="checkbox" value="c" checked><span>commits</span></label>
+        <label><input type="checkbox" value="a"><span>additions</span></label>
+        <label><input type="checkbox" value="d"><span>deletions</span></label>
+        <label><input type="checkbox" value="net"><span>net lines</span></label>
+        <label><input type="checkbox" value="po"><span>PRs opened</span></label>
+        <label><input type="checkbox" value="pm"><span>PRs merged</span></label>
+        <label><input type="checkbox" value="io"><span>issues opened</span></label>
+      </div>
+    </div>
+
+    <div class="ctrl">
+      <label>File extensions <small style="text-transform:none; color:var(--text-dim)">(line metrics only)</small></label>
+      <select id="extensions" multiple></select>
+      <div class="row">
+        <button class="action" id="ext-all">All</button>
+        <button class="action" id="ext-none">None</button>
+      </div>
+    </div>
+
+    <div class="ctrl">
+      <label>Granularity</label>
+      <select id="granularity">
+        <option value="weekly">Weekly</option>
+        <option value="monthly" selected>Monthly</option>
+        <option value="quarterly">Quarterly</option>
+      </select>
+      <label style="margin-top:4px;">Mode</label>
+      <select id="mode">
+        <option value="stack">Stacked area</option>
+        <option value="line">Line</option>
+        <option value="cumulative">Cumulative line</option>
+      </select>
+    </div>
+
+    <div class="ctrl">
+      <label>Repos</label>
+      <select id="repos" multiple></select>
+      <div class="row">
+        <button class="action" id="repos-all">All</button>
+        <button class="action" id="repos-active">Active only</button>
+      </div>
+    </div>
+  </div>
+
+  <main>
+    <div class="chart-card">
+      <h2>All repos combined <small id="combined-summary"></small></h2>
+      <div class="plot" id="plot-combined" style="height: 480px;" data-base-height="480"></div>
+    </div>
+    <div id="per-repo-charts"></div>
+  </main>
+</div>
+
+<script>
+// ============================================================
+// State + data
+// ============================================================
+const STATE = {
+  data: null,                   // raw JSON
+  weekRange: [null, null],      // [minWeek, maxWeek] unix
+  filters: {
+    dateFrom: null,             // unix
+    dateTo: null,
+    contributors: new Set(),    // canonical logins
+    excludeBots: true,
+    metrics: new Set(["c"]),
+    extensions: new Set(),      // empty = all
+    granularity: "monthly",
+    mode: "stack",
+    repos: new Set(),           // selected repos
+  },
+};
+
+// Plotly color palette (re-used per contributor for visual continuity)
+const PALETTE = [
+  "#2f81f7", "#3fb950", "#f85149", "#a371f7", "#db61a2", "#bf8700",
+  "#1f6feb", "#56d364", "#f78166", "#bc8cff", "#ec6cb9", "#e3b341",
+  "#0969da", "#2da44e", "#cf222e", "#8250df", "#bf3989", "#9a6700",
+];
+
+// ============================================================
+// Boot
+// ============================================================
+const fileInput = document.getElementById("file-input");
+fileInput.addEventListener("change", async (e) => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const text = await f.text();
+  try {
+    const json = JSON.parse(text);
+    bootstrap(json);
+  } catch (err) {
+    alert("Could not parse JSON: " + err.message);
+  }
+});
+
+// Auto-load contributors.json from same directory if served via http(s)
+async function tryAutoload() {
+  if (location.protocol === "file:") return;
+  try {
+    const r = await fetch("contributors.json");
+    if (r.ok) bootstrap(await r.json());
+  } catch (_) {}
+}
+tryAutoload();
+
+// ============================================================
+// Bootstrap
+// ============================================================
+function bootstrap(json) {
+  STATE.data = json;
+  document.getElementById("file-loader").style.display = "none";
+  document.getElementById("app").style.display = "";
+  document.getElementById("org-info").textContent =
+    `${json.org} — ${json.repos.length} repos, ` +
+    `${countAuthors(json)} contributors, ` +
+    `fetched ${new Date(json.fetched_at).toLocaleString()}`;
+
+  computeWeekRange();
+  populateContributors();
+  populateExtensions();
+  populateRepos();
+  setDefaultDateRange();
+  wireControls();
+  render();
+}
+
+function countAuthors(json) {
+  const set = new Set();
+  for (const s of json.stats) set.add(authorId(s.author));
+  return set.size;
+}
+
+function authorId(a) {
+  return (a.login || a.email || a.name || "unknown").toLowerCase();
+}
+
+function authorLabel(a) {
+  return a.login || a.name || a.email || "unknown";
+}
+
+function computeWeekRange() {
+  let min = Infinity, max = -Infinity;
+  for (const s of STATE.data.stats)
+    for (const w of s.weeks) {
+      if (w.w < min) min = w.w;
+      if (w.w > max) max = w.w;
+    }
+  STATE.weekRange = [min === Infinity ? 0 : min, max === -Infinity ? 0 : max];
+}
+
+function setDefaultDateRange() {
+  const [min, max] = STATE.weekRange;
+  STATE.filters.dateFrom = min;
+  STATE.filters.dateTo = max;
+  document.getElementById("date-from").value = unixToDateStr(min);
+  document.getElementById("date-to").value = unixToDateStr(max);
+  document.querySelector('#date-quick button[data-range="all"]').classList.add("active");
+}
+
+function unixToDateStr(u) {
+  const d = new Date(u * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+function dateStrToUnix(s) {
+  return Math.floor(new Date(s + "T00:00:00Z").getTime() / 1000);
+}
+
+// ============================================================
+// Populate selects
+// ============================================================
+function populateContributors() {
+  // Aggregate totals across all repos for ranking
+  const totals = new Map(); // id -> {label, total, isBot}
+  for (const s of STATE.data.stats) {
+    const id = authorId(s.author);
+    const cur = totals.get(id) || { label: authorLabel(s.author), total: 0, isBot: !!s.author.is_bot };
+    cur.total += s.total || 0;
+    if (s.author.is_bot) cur.isBot = true;
+    totals.set(id, cur);
+  }
+  const arr = Array.from(totals.entries()).sort((a, b) => b[1].total - a[1].total);
+  const sel = document.getElementById("contributors");
+  sel.innerHTML = "";
+  for (const [id, info] of arr) {
+    const opt = document.createElement("option");
+    opt.value = id;
+    opt.textContent = `${info.label}  (${info.total})${info.isBot ? "  [bot]" : ""}`;
+    opt.dataset.bot = info.isBot ? "1" : "0";
+    opt.selected = !info.isBot; // default: all non-bots
+    sel.appendChild(opt);
+  }
+  syncContributorsToState();
+}
+
+function populateExtensions() {
+  // Union all repos' top extensions, plus _other
+  const extSet = new Set();
+  for (const list of Object.values(STATE.data.repo_top_extensions || {})) {
+    for (const e of list) extSet.add(e);
+  }
+  extSet.add("_other");
+  const arr = Array.from(extSet).sort((a, b) => {
+    if (a === "_other") return 1;
+    if (b === "_other") return -1;
+    return a.localeCompare(b);
+  });
+  const sel = document.getElementById("extensions");
+  sel.innerHTML = "";
+  for (const e of arr) {
+    const opt = document.createElement("option");
+    opt.value = e;
+    opt.textContent = e === "" ? "(no ext)" : e;
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+  syncExtensionsToState();
+}
+
+function populateRepos() {
+  const sel = document.getElementById("repos");
+  sel.innerHTML = "";
+  // Sort by total commits descending
+  const totals = new Map();
+  for (const s of STATE.data.stats) {
+    totals.set(s.repo, (totals.get(s.repo) || 0) + (s.total || 0));
+  }
+  const sorted = STATE.data.repos.slice().sort(
+    (a, b) => (totals.get(b.name) || 0) - (totals.get(a.name) || 0)
+  );
+  for (const r of sorted) {
+    const opt = document.createElement("option");
+    opt.value = r.name;
+    const tot = totals.get(r.name) || 0;
+    opt.textContent = `${r.name}  (${tot})${r.archived ? "  [archived]" : ""}`;
+    opt.dataset.archived = r.archived ? "1" : "0";
+    opt.dataset.activity = tot;
+    opt.selected = true;
+    sel.appendChild(opt);
+  }
+  syncReposToState();
+}
+
+function syncContributorsToState() {
+  const sel = document.getElementById("contributors");
+  STATE.filters.contributors = new Set(
+    Array.from(sel.selectedOptions).map(o => o.value)
+  );
+}
+function syncExtensionsToState() {
+  const sel = document.getElementById("extensions");
+  STATE.filters.extensions = new Set(
+    Array.from(sel.selectedOptions).map(o => o.value)
+  );
+}
+function syncReposToState() {
+  const sel = document.getElementById("repos");
+  STATE.filters.repos = new Set(
+    Array.from(sel.selectedOptions).map(o => o.value)
+  );
+}
+
+// ============================================================
+// Wire controls
+// ============================================================
+function wireControls() {
+  document.getElementById("date-from").addEventListener("change", e => {
+    STATE.filters.dateFrom = dateStrToUnix(e.target.value);
+    clearDateQuick();
+    render();
+  });
+  document.getElementById("date-to").addEventListener("change", e => {
+    STATE.filters.dateTo = dateStrToUnix(e.target.value);
+    clearDateQuick();
+    render();
+  });
+
+  document.querySelectorAll("#date-quick button").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll("#date-quick button").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      const range = btn.dataset.range;
+      const max = STATE.weekRange[1];
+      let from;
+      if (range === "all") from = STATE.weekRange[0];
+      else if (range === "3y") from = max - 3 * 365 * 86400;
+      else if (range === "1y") from = max - 365 * 86400;
+      else if (range === "6m") from = max - 182 * 86400;
+      else if (range === "3m") from = max - 91 * 86400;
+      else if (range === "1m") from = max - 30 * 86400;
+      from = Math.max(from, STATE.weekRange[0]);
+      STATE.filters.dateFrom = from;
+      STATE.filters.dateTo = max;
+      document.getElementById("date-from").value = unixToDateStr(from);
+      document.getElementById("date-to").value = unixToDateStr(max);
+      render();
+    });
+  });
+
+  document.getElementById("contributors").addEventListener("change", () => {
+    syncContributorsToState();
+    render();
+  });
+  document.getElementById("contrib-all").addEventListener("click", () => {
+    const sel = document.getElementById("contributors");
+    const excludeBots = document.getElementById("exclude-bots").checked;
+    Array.from(sel.options).forEach(o => o.selected = !excludeBots || o.dataset.bot !== "1");
+    syncContributorsToState();
+    render();
+  });
+  document.getElementById("contrib-none").addEventListener("click", () => {
+    Array.from(document.getElementById("contributors").options).forEach(o => o.selected = false);
+    syncContributorsToState();
+    render();
+  });
+  document.getElementById("exclude-bots").addEventListener("change", e => {
+    const sel = document.getElementById("contributors");
+    if (e.target.checked) {
+      Array.from(sel.options).forEach(o => {
+        if (o.dataset.bot === "1") o.selected = false;
+      });
+    } else {
+      Array.from(sel.options).forEach(o => {
+        if (o.dataset.bot === "1") o.selected = true;
+      });
+    }
+    syncContributorsToState();
+    render();
+  });
+
+  document.querySelectorAll('#metrics input').forEach(cb => {
+    cb.addEventListener("change", () => {
+      STATE.filters.metrics = new Set(
+        Array.from(document.querySelectorAll('#metrics input:checked')).map(i => i.value)
+      );
+      render();
+    });
+  });
+
+  document.getElementById("extensions").addEventListener("change", () => {
+    syncExtensionsToState();
+    render();
+  });
+  document.getElementById("ext-all").addEventListener("click", () => {
+    Array.from(document.getElementById("extensions").options).forEach(o => o.selected = true);
+    syncExtensionsToState();
+    render();
+  });
+  document.getElementById("ext-none").addEventListener("click", () => {
+    Array.from(document.getElementById("extensions").options).forEach(o => o.selected = false);
+    syncExtensionsToState();
+    render();
+  });
+
+  document.getElementById("granularity").addEventListener("change", e => {
+    STATE.filters.granularity = e.target.value;
+    render();
+  });
+  document.getElementById("mode").addEventListener("change", e => {
+    STATE.filters.mode = e.target.value;
+    render();
+  });
+
+  document.getElementById("repos").addEventListener("change", () => {
+    syncReposToState();
+    render();
+  });
+  document.getElementById("repos-all").addEventListener("click", () => {
+    Array.from(document.getElementById("repos").options).forEach(o => o.selected = true);
+    syncReposToState();
+    render();
+  });
+  document.getElementById("repos-active").addEventListener("click", () => {
+    Array.from(document.getElementById("repos").options).forEach(o => {
+      o.selected = o.dataset.archived !== "1" && Number(o.dataset.activity) > 0;
+    });
+    syncReposToState();
+    render();
+  });
+}
+
+function clearDateQuick() {
+  document.querySelectorAll("#date-quick button").forEach(b => b.classList.remove("active"));
+}
+
+// ============================================================
+// Aggregation
+// ============================================================
+const SECONDS_DAY = 86400;
+const SECONDS_WEEK = 7 * SECONDS_DAY;
+
+function bucketStart(unix, granularity) {
+  // Always Sunday-anchored for weekly. Monthly = first of month UTC.
+  // Quarterly = first day of Jan/Apr/Jul/Oct UTC.
+  if (granularity === "weekly") return unix;
+  const d = new Date(unix * 1000);
+  if (granularity === "monthly") {
+    return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000);
+  }
+  // quarterly
+  const q = Math.floor(d.getUTCMonth() / 3) * 3;
+  return Math.floor(Date.UTC(d.getUTCFullYear(), q, 1) / 1000);
+}
+
+function metricFromWeek(w, metricKey, extFilter) {
+  // extFilter: Set of allowed extensions, or null for "all" (all = use w.a / w.d directly).
+  if (metricKey === "c") return w.c;
+  if (metricKey === "po") return w.po || 0;
+  if (metricKey === "pm") return w.pm || 0;
+  if (metricKey === "io") return w.io || 0;
+  // line metrics
+  if (extFilter == null) {
+    if (metricKey === "a") return w.a;
+    if (metricKey === "d") return w.d;
+    if (metricKey === "net") return w.a - w.d;
+  } else {
+    let a = 0, d = 0;
+    for (const [ext, [ea, ed]] of Object.entries(w.ext || {})) {
+      if (extFilter.has(ext)) { a += ea; d += ed; }
+    }
+    if (metricKey === "a") return a;
+    if (metricKey === "d") return d;
+    if (metricKey === "net") return a - d;
+  }
+  return 0;
+}
+
+function buildSeries(stats, repoFilter) {
+  // Returns {byContrib: Map<contribId, {label, color, byMetric: Map<metric, Map<bucket, value>>}>}
+  // Aggregates across repos that pass repoFilter.
+  const f = STATE.filters;
+  const byContrib = new Map();
+  const allowedExt = (f.extensions.size === 0)
+    ? new Set()  // none: still show 0 for line metrics
+    : f.extensions;
+  // If user selected ALL extensions (including _other), use null shortcut for direct a/d.
+  const allKnownExts = new Set();
+  for (const list of Object.values(STATE.data.repo_top_extensions || {})) {
+    for (const e of list) allKnownExts.add(e);
+  }
+  allKnownExts.add("_other");
+  const useExtFilter = !(allKnownExts.size === f.extensions.size
+    && Array.from(allKnownExts).every(e => f.extensions.has(e)));
+
+  for (const s of stats) {
+    if (repoFilter && !repoFilter(s.repo)) continue;
+    const id = authorId(s.author);
+    if (!f.contributors.has(id)) continue;
+    let entry = byContrib.get(id);
+    if (!entry) {
+      entry = { label: authorLabel(s.author), byMetric: new Map() };
+      byContrib.set(id, entry);
+    }
+    for (const w of s.weeks) {
+      if (w.w < f.dateFrom || w.w > f.dateTo) continue;
+      const bucket = bucketStart(w.w, f.granularity);
+      for (const m of f.metrics) {
+        const isLine = (m === "a" || m === "d" || m === "net");
+        const filt = (isLine && useExtFilter) ? allowedExt : null;
+        if (isLine && useExtFilter && allowedExt.size === 0) continue;
+        const v = metricFromWeek(w, m, filt);
+        if (!v) continue;
+        let mm = entry.byMetric.get(m);
+        if (!mm) { mm = new Map(); entry.byMetric.set(m, mm); }
+        mm.set(bucket, (mm.get(bucket) || 0) + v);
+      }
+    }
+  }
+  // Assign colors deterministically by canonical id
+  const ids = Array.from(byContrib.keys()).sort();
+  ids.forEach((id, i) => byContrib.get(id).color = PALETTE[i % PALETTE.length]);
+  return byContrib;
+}
+
+function bucketsInRange() {
+  const f = STATE.filters;
+  // Walk from bucketStart(dateFrom) to bucketStart(dateTo), stepping by granularity.
+  const out = [];
+  let t = bucketStart(f.dateFrom, f.granularity);
+  const end = bucketStart(f.dateTo, f.granularity);
+  while (t <= end) {
+    out.push(t);
+    t = nextBucket(t, f.granularity);
+    if (out.length > 5000) break;
+  }
+  return out;
+}
+
+function nextBucket(t, granularity) {
+  if (granularity === "weekly") return t + SECONDS_WEEK;
+  const d = new Date(t * 1000);
+  if (granularity === "monthly") {
+    return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1) / 1000);
+  }
+  return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 3, 1) / 1000);
+}
+
+// ============================================================
+// Plotting
+// ============================================================
+function metricLabel(m) {
+  return {
+    c: "commits",
+    a: "additions",
+    d: "deletions",
+    net: "net lines",
+    po: "PRs opened",
+    pm: "PRs merged",
+    io: "issues opened",
+  }[m] || m;
+}
+
+function buildTraces(byContrib, mode) {
+  // One trace per (contributor × metric). Each metric goes on its own
+  // subplot row so wildly different scales (commits vs lines) can coexist.
+  const f = STATE.filters;
+  const xs = bucketsInRange().map(t => new Date(t * 1000));
+  const xUnix = bucketsInRange();
+  const traces = [];
+  const metricList = Array.from(f.metrics);
+  const rankedContribs = Array.from(byContrib.entries())
+    .map(([id, e]) => {
+      let total = 0;
+      for (const mm of e.byMetric.values()) for (const v of mm.values()) total += v;
+      return [id, e, total];
+    })
+    .sort((a, b) => b[2] - a[2]);
+
+  for (const [id, entry] of rankedContribs) {
+    metricList.forEach((m, mi) => {
+      const mm = entry.byMetric.get(m);
+      if (!mm) return;
+      let cum = 0;
+      const ys = xUnix.map(t => {
+        const v = mm.get(t) || 0;
+        cum += v;
+        return mode === "cumulative" ? cum : v;
+      });
+      if (!ys.some(v => v !== 0)) return;
+      const axisSuffix = mi === 0 ? "" : String(mi + 1);
+      const trace = {
+        name: entry.label,
+        x: xs,
+        y: ys,
+        type: "scatter",
+        mode: "lines",
+        line: { color: entry.color, width: 1.5 },
+        legendgroup: id,
+        showlegend: mi === 0,
+        xaxis: "x" + axisSuffix,
+        yaxis: "y" + axisSuffix,
+        hovertemplate:
+          `<b>${entry.label}</b><br>` +
+          `${metricLabel(m)}: %{y:,}<br>` +
+          `%{x|%Y-%m-%d}<extra></extra>`,
+      };
+      if (mode === "stack") {
+        // Distinct stackgroup per metric so each subplot stacks within itself
+        trace.stackgroup = "stack-" + m;
+        trace.fill = "tonexty";
+      }
+      traces.push(trace);
+    });
+  }
+  return traces;
+}
+
+function plotLayout(metrics) {
+  const ms = Array.from(metrics);
+  const layout = {
+    paper_bgcolor: "#161b22",
+    plot_bgcolor: "#161b22",
+    font: { color: "#e6edf3", size: 11 },
+    margin: { l: 60, r: 20, t: 10, b: 40 },
+    legend: {
+      orientation: "v",
+      bgcolor: "rgba(0,0,0,0)",
+      font: { size: 11 },
+    },
+    hovermode: "x unified",
+    grid: { rows: ms.length, columns: 1, pattern: "independent", roworder: "top to bottom" },
+  };
+  ms.forEach((m, i) => {
+    const sfx = i === 0 ? "" : String(i + 1);
+    layout["xaxis" + sfx] = {
+      gridcolor: "#30363d", zerolinecolor: "#30363d",
+      anchor: "y" + sfx,
+    };
+    layout["yaxis" + sfx] = {
+      gridcolor: "#30363d", zerolinecolor: "#30363d",
+      rangemode: "tozero",
+      anchor: "x" + sfx,
+      title: { text: metricLabel(m), font: { size: 11, color: "#8b949e" } },
+    };
+  });
+  return layout;
+}
+
+function plotHeight(metrics, base = 320) {
+  // Each extra metric adds 200px of vertical space.
+  return base + Math.max(0, metrics.size - 1) * 200;
+}
+
+function plotConfig() {
+  return {
+    responsive: true,
+    displaylogo: false,
+    modeBarButtonsToRemove: ["lasso2d", "select2d"],
+    toImageButtonOptions: { format: "png", filename: "contributor-graph", scale: 2 },
+  };
+}
+
+// ============================================================
+// Render
+// ============================================================
+function render() {
+  if (STATE.filters.metrics.size === 0) {
+    document.getElementById("plot-combined").innerHTML =
+      '<div class="empty">Select at least one metric.</div>';
+    document.getElementById("per-repo-charts").innerHTML = "";
+    return;
+  }
+
+  // Combined chart
+  const combinedSeries = buildSeries(
+    STATE.data.stats,
+    repo => STATE.filters.repos.has(repo)
+  );
+  const combinedTraces = buildTraces(combinedSeries, STATE.filters.mode);
+  const combinedEl = document.getElementById("plot-combined");
+  combinedEl.style.height = plotHeight(STATE.filters.metrics, 480) + "px";
+  Plotly.newPlot(
+    combinedEl,
+    combinedTraces,
+    plotLayout(STATE.filters.metrics),
+    plotConfig()
+  );
+  // Summary
+  let totals = 0;
+  for (const e of combinedSeries.values()) {
+    for (const mm of e.byMetric.values()) {
+      for (const v of mm.values()) totals += v;
+    }
+  }
+  document.getElementById("combined-summary").textContent =
+    `${combinedSeries.size} contributors, ${totals.toLocaleString()} total events in window`;
+
+  // Per-repo charts (only for selected repos)
+  const reposContainer = document.getElementById("per-repo-charts");
+  reposContainer.innerHTML = "";
+  // Sort repos by total activity in window
+  const repoActivity = new Map();
+  for (const s of STATE.data.stats) {
+    if (!STATE.filters.repos.has(s.repo)) continue;
+    let tot = 0;
+    for (const w of s.weeks) {
+      if (w.w < STATE.filters.dateFrom || w.w > STATE.filters.dateTo) continue;
+      tot += (w.c || 0) + (w.po || 0) + (w.io || 0);
+    }
+    repoActivity.set(s.repo, (repoActivity.get(s.repo) || 0) + tot);
+  }
+  const sortedRepos = Array.from(repoActivity.entries())
+    .filter(([, v]) => v > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([r]) => r);
+
+  for (const repoName of sortedRepos) {
+    const meta = STATE.data.repos.find(r => r.name === repoName);
+    const card = document.createElement("div");
+    card.className = "chart-card";
+    card.innerHTML = `
+      <h2>${repoName}
+        <small>${meta?.language || ""} ${meta?.archived ? "[archived]" : ""}</small>
+        <a href="${meta?.html_url}" target="_blank">github ↗</a>
+      </h2>
+      <div class="plot"></div>
+    `;
+    reposContainer.appendChild(card);
+    const plotEl = card.querySelector(".plot");
+    plotEl.style.height = plotHeight(STATE.filters.metrics, 280) + "px";
+    const series = buildSeries(
+      STATE.data.stats.filter(s => s.repo === repoName),
+      _ => true
+    );
+    const traces = buildTraces(series, STATE.filters.mode);
+    Plotly.newPlot(
+      plotEl,
+      traces,
+      plotLayout(STATE.filters.metrics),
+      plotConfig()
+    );
+  }
+}
+
+window.addEventListener("resize", () => {
+  // Plotly handles responsive automatically, but force a relayout for height changes
+  document.querySelectorAll(".plot").forEach(el => {
+    if (el._fullLayout) Plotly.Plots.resize(el);
+  });
+});
+</script>
+</body>
+</html>

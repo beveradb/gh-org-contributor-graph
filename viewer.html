@@ -335,8 +335,18 @@ fileInput.addEventListener("change", async (e) => {
   }
 });
 
-// Auto-load contributors.json from same directory if served via http(s)
+// Auto-load priority:
+//   1. window.__BUNDLED_DATA__ (set by bundle.py for self-contained file)
+//   2. fetch("contributors.json") from same dir if served over http(s)
+//   3. otherwise leave the file picker visible
 async function tryAutoload() {
+  // Defer one tick so any `const` declared later in this script tag
+  // (e.g. TYPE_SYMBOL) is initialized before bootstrap runs.
+  await Promise.resolve();
+  if (window.__BUNDLED_DATA__) {
+    bootstrap(window.__BUNDLED_DATA__);
+    return;
+  }
   if (location.protocol === "file:") return;
   try {
     const r = await fetch("contributors.json");

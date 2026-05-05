@@ -3,6 +3,7 @@ aliases.json
 data/
 repos/
 cache/
+dist/
 __pycache__/
 *.pyc
 .DS_Store

@@ -28,6 +28,24 @@ open http://localhost:8765/viewer.html   # auto-loads contributors.json
 
 `viewer.html` also accepts a manual file pick when opened via `file://`.
 
+### Sharing as a single file
+
+To send a coworker a self-contained version (data baked in, no
+fetcher / server / repo access required on their end):
+
+```bash
+python3 bundle.py                  # writes dist/<org>-contributors.html
+python3 bundle.py --inline-plotly  # +Plotly.js inline, fully offline
+```
+
+The output is one HTML file (~1 MB for an org our size; ~5 MB with
+Plotly inlined) that opens directly via `file://`. Email / AirDrop /
+Slack it; recipient double-clicks.
+
+**Privacy reminder:** the bundle includes everything in
+`contributors.json` — author emails, private repo names, etc. Only
+share with people authorized to see all of it.
+
 ## Phase 1: `fetch.py`
 
 ```

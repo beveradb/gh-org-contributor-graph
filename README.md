@@ -3,11 +3,15 @@
 Visualize contributor activity across all repos in a GitHub org over time.
 
 For each repo in an org, the fetcher maintains a bare clone, runs
-`git log --numstat`, and aggregates per-(repo, author) weekly buckets of
-commits / additions / deletions into a single JSON file. A static HTML viewer
-(Phase 2) renders it with interactive filters.
+`git log --numstat`, hits the GitHub API for PRs and issues, and writes
+a single `contributors.json`. The static HTML viewer renders it with
+interactive filters: combined chart, event-level activity scatter, and
+per-repo small-multiples.
 
 Generic — works on any org. Auth is via the GitHub CLI's existing token.
+
+Requirements: Python 3.10+, `git`, [GitHub CLI](https://cli.github.com/).
+No Python dependencies (stdlib only).
 
 ## Status
 
@@ -21,26 +25,32 @@ Generic — works on any org. Auth is via the GitHub CLI's existing token.
 ```bash
 gh auth login                            # if not already signed in
 cp aliases.example.json aliases.json     # optional: edit to merge identities
+```
+
+Three workflows from there:
+
+**Local view** (iterating, dev loop):
+```bash
 python3 fetch.py --org <ORG_LOGIN>       # writes contributors.json
 python3 -m http.server 8765              # serve next to contributors.json
 open http://localhost:8765/viewer.html   # auto-loads contributors.json
 ```
 
-`viewer.html` also accepts a manual file pick when opened via `file://`.
-
-### Sharing as a single file
-
-To send a coworker a self-contained version (data baked in, no
-fetcher / server / repo access required on their end):
-
+**One-shot share** (single self-contained HTML for a coworker):
 ```bash
-python3 bundle.py                  # writes dist/<org>-contributors.html
-python3 bundle.py --inline-plotly  # +Plotly.js inline, fully offline
+python3 bundle.py --org <ORG_LOGIN>      # fetches + bundles in one step
+                                          # → dist/<ORG>-contributors.html
 ```
 
-The output is one HTML file (~1 MB for an org our size; ~5 MB with
-Plotly inlined) that opens directly via `file://`. Email / AirDrop /
-Slack it; recipient double-clicks.
+**Already-fetched share** (use existing `contributors.json`):
+```bash
+python3 bundle.py                        # bundles whatever is in CWD
+python3 bundle.py --inline-plotly        # also embed Plotly.js (offline)
+```
+
+The bundle is one HTML file (~1 MB for an org our size; ~5 MB with
+Plotly inlined) that opens via `file://`. AirDrop / email / Slack it
+to a coworker; they double-click to open.
 
 **Privacy reminder:** the bundle includes everything in
 `contributors.json` — author emails, private repo names, etc. Only
@@ -57,6 +67,7 @@ python3 fetch.py --org <ORG_LOGIN> [options]
 | `--org <name>` | required | GitHub org login |
 | `--output <path>` | `contributors.json` | output JSON |
 | `--cache-dir <path>` | `repos` | bare-clone cache dir |
+| `--cache-dir-api <path>` | `cache` | API response cache dir |
 | `--aliases <path>` | `aliases.json` | identity-merge map (skipped if file missing) |
 | `--include-forks` | off | include repos forked from outside the org |
 | `--exclude-archived` | off | skip archived repos |
@@ -112,29 +123,48 @@ git -C repos/<repo>.git log --author=<email> --pretty=format:'%H' --max-count=1 
 
 ### Output JSON
 
-```json
+```jsonc
 {
   "org": "...",
   "fetched_at": "ISO-8601",
   "method": "local-clone",
-  "filters": {"include_forks": false, "include_archived": true,
-              "no_merges": false, "only": null},
+  "filters": {
+    "include_forks": false, "include_archived": true,
+    "no_merges": false, "only": null,
+    "include_prs_issues": true, "top_extensions": 15
+  },
   "repos": [{"name", "full_name", "created_at", "pushed_at", "archived",
              "fork", "private", "default_branch", "language", "topics",
              "html_url"}],
+  "repo_top_extensions": {"<repo>": [".ts", ".md", ...]},
   "stats": [{
     "repo": "<repo-name>",
-    "author": {"name", "email", "login", "aliased",
+    "author": {"name", "email", "login", "aliased", "is_bot",
                "names": [...], "emails": [...]},
-    "total": <int commits>,
-    "weeks": [{"w": <unix sunday>, "c": commits, "a": additions, "d": deletions}]
+    "total": <commits>,
+    "weeks": [{
+      "w":  <unix sunday>,
+      "c":  <commits>,  "a": <additions>, "d": <deletions>,
+      "ext": {".md": [<adds>, <dels>], ..., "_other": [<adds>, <dels>]},
+      "po": <PRs opened>, "pm": <PRs merged>, "io": <issues opened>
+    }]
+  }],
+  "events": [{
+    "t":  "c" | "po" | "pm" | "io",
+    "r":  "<repo>", "u": "<canonical author id>",
+    "ts": <unix timestamp>,
+    "a":  <additions, commits only>,
+    "d":  <deletions, commits only>,
+    "sha": "<7-char sha, commits only>"
   }]
 }
 ```
 
 Weeks are Sunday-anchored UTC (matching GitHub's `/stats/contributors`
-convention). `aliased: true` indicates the row was merged from multiple
-git identities via `aliases.json`.
+convention). The `events` array is sorted by `ts` and powers daily
+granularity + the activity scatter. `aliased: true` on an author
+indicates the row was merged from multiple git identities via
+`aliases.json`.
 
 ## Auth
 
@@ -147,10 +177,15 @@ Single static file. No build step. Plotly via CDN. Auto-loads
 `contributors.json` if served over http(s); offers a file picker on
 `file://`.
 
-Layout:
+Layout (top-down):
 
-- Combined chart (selected repos summed) at the top.
-- One smaller chart per repo below, ordered by activity in the window.
+1. **Combined chart** — selected repos summed; one subplot row per
+   selected metric.
+2. **Activity timeline** — event-level scatter, every commit / PR /
+   issue as a marker. Y axis switches between contributor and repo;
+   color is per repo; commit-marker size is `√(lines changed)`.
+3. **Per-repo charts** — collapsible `<details>` section, one chart
+   per repo with activity in the window, ordered by activity.
 
 Controls:
 
@@ -165,7 +200,9 @@ Controls:
 - **File extensions** — multi-select; applies only to line metrics
   (`additions` / `deletions` / `net lines`). Selecting only `.md`, for
   example, surfaces docs activity vs code activity.
-- **Granularity** — weekly / monthly / quarterly.
+- **Granularity** — daily / weekly / monthly / quarterly. Daily uses
+  the per-event timestamps from `events[]`; weekly+ use the
+  precomputed week buckets.
 - **Mode** — stacked area / line / cumulative line.
 - **Repos** — multi-select with `Active only` shortcut (excludes
   archived + zero-activity).
@@ -173,18 +210,45 @@ Controls:
 Hover gives author + metric + date. Each contributor gets a stable
 color, shared across the combined chart and every per-repo chart.
 
-### Activity timeline (event scatter)
+## bundle.py
 
-Below the combined chart is an event-level scatter rendering every
-commit / PR open / PR merge / issue open as a single marker, colored
-by repo. Y axis switches between contributor and repo via the toggle
-above the chart; event types can be hidden individually. Marker size
-on commits scales with lines changed. Visualizes activity clusters
-over time at a glance.
+```
+python3 bundle.py [--org <ORG_LOGIN>] [options]
+```
 
-Per-repo charts are tucked into a collapsible `<details>` below the
-scatter, so the page leads with the two big-picture views and the
-small-multiples are one click away.
+| Flag | Default | Behavior |
+|------|---------|----------|
+| `--org <name>` | (none) | run `fetch.py --org <name>` first (cache-aware) |
+| `--data <path>` | `contributors.json` | source data file |
+| `--viewer <path>` | `viewer.html` | viewer template |
+| `--output <path>` | `dist/<org>-contributors.html` | output bundle |
+| `--inline-plotly` | off | embed Plotly.js into the bundle (~+3 MB; offline-safe) |
+| `--refresh` | off | with `--org`, force re-fetch instead of using cache |
+
+The bundle injects `contributors.json` ahead of the viewer's main
+script as `window.__BUNDLED_DATA__`, then escapes `</` so a stray
+`</script>` in any data field can't close the enclosing tag. The
+viewer's autoload prefers bundled data, then falls back to fetching
+`contributors.json`, then to a file picker.
+
+## Repo layout
+
+```
+fetch.py            data fetcher (local clones + cached API hits)
+viewer.html         single-file static viewer (Plotly via CDN)
+bundle.py           one-shot self-contained HTML packager
+aliases.example.json  identity-merge schema example
+LICENSE             MIT
+```
+
+Generated / gitignored:
+```
+contributors.json   fetcher output
+aliases.json        per-user identity-merge map
+repos/              bare clones cache
+cache/              API response cache (per-org)
+dist/               bundled HTML files
+```
 
 ## License
 

@@ -18,6 +18,7 @@ without a server, fetcher, or any other setup.
 import argparse
 import json
 import re
+import subprocess
 import sys
 import urllib.request
 from pathlib import Path
@@ -46,6 +47,11 @@ def fetch_plotly(url: str) -> str:
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--org",
+        help="GitHub org login. If given, runs fetch.py for that org first "
+        "(using its cache, so subsequent runs are fast) and then bundles.",
+    )
     p.add_argument("--data", default="contributors.json")
     p.add_argument("--viewer", default="viewer.html")
     p.add_argument("--output", default=None)
@@ -54,7 +60,26 @@ def main():
         action="store_true",
         help="embed Plotly.js inline (fully offline; bigger file)",
     )
+    p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="when --org is given, pass --refresh to fetch.py to bypass cache",
+    )
     args = p.parse_args()
+
+    if args.org:
+        fetch_cmd = [
+            sys.executable,
+            str(Path(__file__).parent / "fetch.py"),
+            "--org",
+            args.org,
+            "--output",
+            args.data,
+        ]
+        if args.refresh:
+            fetch_cmd.append("--refresh")
+        print(f"running fetch for {args.org}...")
+        subprocess.run(fetch_cmd, check=True)
 
     viewer_path = Path(args.viewer)
     data_path = Path(args.data)

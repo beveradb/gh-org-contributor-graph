@@ -234,6 +234,7 @@
     <div class="ctrl">
       <label>Granularity</label>
       <select id="granularity">
+        <option value="daily">Daily</option>
         <option value="weekly">Weekly</option>
         <option value="monthly" selected>Monthly</option>
         <option value="quarterly">Quarterly</option>
@@ -361,6 +362,7 @@ function bootstrap(json) {
   populateExtensions();
   populateRepos();
   assignRepoColors();
+  buildContribLabels();
   setDefaultDateRange();
   wireControls();
   render();
@@ -457,6 +459,19 @@ function populateExtensions() {
     sel.appendChild(opt);
   }
   syncExtensionsToState();
+}
+
+function buildContribLabels() {
+  // Map from canonical contrib id -> human-readable label, derived from
+  // the (richer) data in stats[].author. Used by the events-based aggregator
+  // since events only carry the canonical id.
+  STATE.contribLabels = new Map();
+  for (const s of STATE.data.stats) {
+    const id = authorId(s.author);
+    if (!STATE.contribLabels.has(id)) {
+      STATE.contribLabels.set(id, authorLabel(s.author));
+    }
+  }
 }
 
 function assignRepoColors() {
@@ -671,9 +686,19 @@ const SECONDS_DAY = 86400;
 const SECONDS_WEEK = 7 * SECONDS_DAY;
 
 function bucketStart(unix, granularity) {
-  // Always Sunday-anchored for weekly. Monthly = first of month UTC.
-  // Quarterly = first day of Jan/Apr/Jul/Oct UTC.
-  if (granularity === "weekly") return unix;
+  // Daily = UTC midnight. Weekly = Sunday-anchored (already true for stats[].weeks).
+  // Monthly = first of month UTC. Quarterly = first day of Jan/Apr/Jul/Oct UTC.
+  if (granularity === "daily") {
+    return Math.floor(unix / SECONDS_DAY) * SECONDS_DAY;
+  }
+  if (granularity === "weekly") {
+    // From weekly stats the input is already Sunday-anchored. From an event
+    // timestamp we need to floor to the prior Sunday 00:00 UTC.
+    const d = new Date(unix * 1000);
+    const daysSinceSunday = (d.getUTCDay()); // 0 = Sun
+    const midnight = Math.floor(unix / SECONDS_DAY) * SECONDS_DAY;
+    return midnight - daysSinceSunday * SECONDS_DAY;
+  }
   const d = new Date(unix * 1000);
   if (granularity === "monthly") {
     return Math.floor(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1) / 1000);
@@ -708,13 +733,17 @@ function metricFromWeek(w, metricKey, extFilter) {
 
 function buildSeries(stats, repoFilter) {
   // Returns {byContrib: Map<contribId, {label, color, byMetric: Map<metric, Map<bucket, value>>}>}
-  // Aggregates across repos that pass repoFilter.
+  // Daily granularity is computed from per-event records (precise timestamps).
+  // Weekly / monthly / quarterly aggregate from the precomputed stats[].weeks.
+  if (STATE.filters.granularity === "daily") {
+    return buildSeriesFromEvents(repoFilter);
+  }
+
   const f = STATE.filters;
   const byContrib = new Map();
   const allowedExt = (f.extensions.size === 0)
-    ? new Set()  // none: still show 0 for line metrics
+    ? new Set()
     : f.extensions;
-  // If user selected ALL extensions (including _other), use null shortcut for direct a/d.
   const allKnownExts = new Set();
   for (const list of Object.values(STATE.data.repo_top_extensions || {})) {
     for (const e of list) allKnownExts.add(e);
@@ -747,10 +776,56 @@ function buildSeries(stats, repoFilter) {
       }
     }
   }
-  // Assign colors deterministically by canonical id
+  assignContribColors(byContrib);
+  return byContrib;
+}
+
+function buildSeriesFromEvents(repoFilter) {
+  // Daily granularity: bucket events directly by UTC day.
+  // Note: the per-extension breakdown is only stored on weekly stats, so
+  // the file-extension filter is effectively ignored in daily mode (line
+  // metrics use the commit's total a/d).
+  const f = STATE.filters;
+  const events = STATE.data.events || [];
+  const byContrib = new Map();
+  const labels = STATE.contribLabels;
+
+  for (const e of events) {
+    if (e.ts < f.dateFrom || e.ts > f.dateTo) continue;
+    if (repoFilter && !repoFilter(e.r)) continue;
+    if (!f.contributors.has(e.u)) continue;
+
+    let entry = byContrib.get(e.u);
+    if (!entry) {
+      entry = { label: labels.get(e.u) || e.u, byMetric: new Map() };
+      byContrib.set(e.u, entry);
+    }
+    const bucket = bucketStart(e.ts, "daily");
+
+    for (const m of f.metrics) {
+      let v = 0;
+      if (m === "c" && e.t === "c") v = 1;
+      else if (m === "po" && e.t === "po") v = 1;
+      else if (m === "pm" && e.t === "pm") v = 1;
+      else if (m === "io" && e.t === "io") v = 1;
+      else if (e.t === "c") {
+        if (m === "a") v = e.a || 0;
+        else if (m === "d") v = e.d || 0;
+        else if (m === "net") v = (e.a || 0) - (e.d || 0);
+      }
+      if (!v) continue;
+      let mm = entry.byMetric.get(m);
+      if (!mm) { mm = new Map(); entry.byMetric.set(m, mm); }
+      mm.set(bucket, (mm.get(bucket) || 0) + v);
+    }
+  }
+  assignContribColors(byContrib);
+  return byContrib;
+}
+
+function assignContribColors(byContrib) {
   const ids = Array.from(byContrib.keys()).sort();
   ids.forEach((id, i) => byContrib.get(id).color = PALETTE[i % PALETTE.length]);
-  return byContrib;
 }
 
 function bucketsInRange() {
@@ -768,6 +843,7 @@ function bucketsInRange() {
 }
 
 function nextBucket(t, granularity) {
+  if (granularity === "daily") return t + SECONDS_DAY;
   if (granularity === "weekly") return t + SECONDS_WEEK;
   const d = new Date(t * 1000);
   if (granularity === "monthly") {

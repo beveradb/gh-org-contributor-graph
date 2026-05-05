@@ -122,6 +122,48 @@
   .empty {
     padding: 40px; text-align: center; color: var(--text-dim);
   }
+
+  .scatter-controls {
+    display: flex; flex-wrap: wrap; gap: 16px;
+    padding: 8px 16px; border-bottom: 1px solid var(--border);
+    font-size: 12px; color: var(--text-dim);
+  }
+  .scatter-controls .group {
+    display: flex; gap: 6px; align-items: center;
+  }
+  .scatter-controls .group strong {
+    color: var(--text); font-weight: 500; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .scatter-controls .toggle-btn {
+    background: var(--panel-2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 2px 8px; font-size: 12px; cursor: pointer;
+    user-select: none;
+  }
+  .scatter-controls .toggle-btn.active {
+    border-color: var(--accent); background: rgba(47, 129, 247, 0.12);
+    color: var(--accent-hover);
+  }
+
+  details.per-repo-section {
+    margin-top: 8px;
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 6px;
+  }
+  details.per-repo-section > summary {
+    padding: 12px 16px; font-size: 14px; font-weight: 600;
+    cursor: pointer; user-select: none;
+    list-style: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  details.per-repo-section > summary::-webkit-details-marker { display: none; }
+  details.per-repo-section > summary::before {
+    content: "▶"; color: var(--text-dim); font-size: 10px; transition: transform 0.15s;
+  }
+  details[open].per-repo-section > summary::before { transform: rotate(90deg); }
+  details.per-repo-section > summary small { color: var(--text-dim); font-weight: 400; font-size: 12px; }
+  details.per-repo-section > .body { padding: 16px; }
 </style>
 </head>
 <body>
@@ -219,7 +261,30 @@
       <h2>All repos combined <small id="combined-summary"></small></h2>
       <div class="plot" id="plot-combined" style="height: 480px;" data-base-height="480"></div>
     </div>
-    <div id="per-repo-charts"></div>
+
+    <div class="chart-card">
+      <h2>Activity timeline <small id="scatter-summary"></small></h2>
+      <div class="scatter-controls">
+        <div class="group">
+          <strong>Y axis</strong>
+          <button class="toggle-btn active" data-y="contributor">contributor</button>
+          <button class="toggle-btn" data-y="repo">repo</button>
+        </div>
+        <div class="group">
+          <strong>Event types</strong>
+          <button class="toggle-btn active" data-type="c">commit (●)</button>
+          <button class="toggle-btn active" data-type="po">PR opened (▲)</button>
+          <button class="toggle-btn active" data-type="pm">PR merged (■)</button>
+          <button class="toggle-btn active" data-type="io">issue opened (♦)</button>
+        </div>
+      </div>
+      <div class="plot" id="plot-scatter" style="height: 460px;"></div>
+    </div>
+
+    <details class="per-repo-section" id="per-repo-section">
+      <summary>Per-repo charts <small id="per-repo-count"></small></summary>
+      <div class="body" id="per-repo-charts"></div>
+    </details>
   </main>
 </div>
 
@@ -240,7 +305,10 @@ const STATE = {
     granularity: "monthly",
     mode: "stack",
     repos: new Set(),           // selected repos
+    scatterY: "contributor",    // "contributor" | "repo"
+    scatterTypes: new Set(["c", "po", "pm", "io"]),
   },
+  repoColors: new Map(),
 };
 
 // Plotly color palette (re-used per contributor for visual continuity)
@@ -292,6 +360,7 @@ function bootstrap(json) {
   populateContributors();
   populateExtensions();
   populateRepos();
+  assignRepoColors();
   setDefaultDateRange();
   wireControls();
   render();
@@ -388,6 +457,22 @@ function populateExtensions() {
     sel.appendChild(opt);
   }
   syncExtensionsToState();
+}
+
+function assignRepoColors() {
+  // Stable color per repo, sorted by total activity descending so the
+  // most prominent repo gets the most readable color.
+  const totals = new Map();
+  for (const s of STATE.data.stats) {
+    totals.set(s.repo, (totals.get(s.repo) || 0) + (s.total || 0));
+  }
+  const sorted = STATE.data.repos
+    .map(r => r.name)
+    .sort((a, b) => (totals.get(b) || 0) - (totals.get(a) || 0));
+  STATE.repoColors.clear();
+  sorted.forEach((name, i) => {
+    STATE.repoColors.set(name, PALETTE[i % PALETTE.length]);
+  });
 }
 
 function populateRepos() {
@@ -550,10 +635,33 @@ function wireControls() {
     syncReposToState();
     render();
   });
+
+  wireScatterControls();
 }
 
 function clearDateQuick() {
   document.querySelectorAll("#date-quick button").forEach(b => b.classList.remove("active"));
+}
+
+function wireScatterControls() {
+  document.querySelectorAll(".scatter-controls button[data-y]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".scatter-controls button[data-y]")
+        .forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      STATE.filters.scatterY = btn.dataset.y;
+      renderScatter();
+    });
+  });
+  document.querySelectorAll(".scatter-controls button[data-type]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      btn.classList.toggle("active");
+      const type = btn.dataset.type;
+      if (btn.classList.contains("active")) STATE.filters.scatterTypes.add(type);
+      else STATE.filters.scatterTypes.delete(type);
+      renderScatter();
+    });
+  });
 }
 
 // ============================================================
@@ -784,6 +892,114 @@ function plotConfig() {
 }
 
 // ============================================================
+// Activity timeline scatter
+// ============================================================
+const TYPE_SYMBOL = { c: "circle", po: "triangle-up", pm: "square", io: "diamond" };
+const TYPE_LABEL = { c: "commit", po: "PR opened", pm: "PR merged", io: "issue opened" };
+
+function renderScatter() {
+  const f = STATE.filters;
+  const events = STATE.data.events || [];
+  const filtered = events.filter(e =>
+    e.ts >= f.dateFrom && e.ts <= f.dateTo
+    && f.contributors.has(e.u)
+    && f.repos.has(e.r)
+    && f.scatterTypes.has(e.t)
+  );
+
+  // One trace per repo so legend toggles repos. Per-point marker symbol
+  // varies by event type (commit/PR/issue).
+  const byRepo = new Map();
+  for (const e of filtered) {
+    if (!byRepo.has(e.r)) byRepo.set(e.r, []);
+    byRepo.get(e.r).push(e);
+  }
+
+  // Sort repos by activity in window for stable, useful legend order
+  const repoOrder = Array.from(byRepo.entries())
+    .sort((a, b) => b[1].length - a[1].length)
+    .map(([r]) => r);
+
+  const traces = [];
+  for (const repo of repoOrder) {
+    const evs = byRepo.get(repo);
+    const color = STATE.repoColors.get(repo) || "#888";
+    traces.push({
+      type: "scattergl",
+      mode: "markers",
+      name: `${repo} (${evs.length})`,
+      x: evs.map(e => new Date(e.ts * 1000)),
+      y: evs.map(e => f.scatterY === "repo" ? e.r : (e.u || "(unknown)")),
+      marker: {
+        color,
+        symbol: evs.map(e => TYPE_SYMBOL[e.t] || "circle"),
+        size: evs.map(e => {
+          if (e.t === "c") {
+            // size scaled by lines changed; capped to keep it readable
+            const lines = (e.a || 0) + (e.d || 0);
+            return Math.max(4, Math.min(22, Math.sqrt(lines) * 0.8 + 4));
+          }
+          return 9;
+        }),
+        opacity: 0.6,
+        line: { width: 0 },
+      },
+      text: evs.map(e => {
+        const head = `${e.u || "(unknown)"} · ${e.r} · ${TYPE_LABEL[e.t]}`;
+        return e.t === "c"
+          ? `${head} · +${e.a||0} -${e.d||0} · ${e.sha || ""}`
+          : head;
+      }),
+      hovertemplate: "%{text}<br>%{x|%Y-%m-%d %H:%M}<extra></extra>",
+    });
+  }
+
+  // Determine y-axis ordering so the busiest entries are at the top
+  const yKey = e => f.scatterY === "repo" ? e.r : (e.u || "(unknown)");
+  const yCounts = new Map();
+  for (const e of filtered) yCounts.set(yKey(e), (yCounts.get(yKey(e)) || 0) + 1);
+  const yOrder = Array.from(yCounts.entries())
+    .sort((a, b) => a[1] - b[1])  // ascending so busiest is at top of category axis
+    .map(([k]) => k);
+
+  const layout = {
+    paper_bgcolor: "#161b22",
+    plot_bgcolor: "#161b22",
+    font: { color: "#e6edf3", size: 11 },
+    margin: { l: 140, r: 20, t: 10, b: 40 },
+    xaxis: { gridcolor: "#30363d", zerolinecolor: "#30363d", type: "date" },
+    yaxis: {
+      gridcolor: "#30363d", zerolinecolor: "#30363d",
+      type: "category",
+      categoryorder: "array",
+      categoryarray: yOrder,
+      automargin: true,
+    },
+    legend: {
+      orientation: "v",
+      bgcolor: "rgba(0,0,0,0)",
+      font: { size: 11 },
+    },
+    hovermode: "closest",
+  };
+
+  // Dynamic height: fit the y categories
+  const rows = Math.max(yOrder.length, 1);
+  const minH = 280, perRow = 36;
+  const el = document.getElementById("plot-scatter");
+  el.style.height = Math.max(minH, rows * perRow + 80) + "px";
+  Plotly.react(el, traces, layout, plotConfig());
+
+  // Summary
+  const counts = { c: 0, po: 0, pm: 0, io: 0 };
+  for (const e of filtered) counts[e.t]++;
+  document.getElementById("scatter-summary").textContent =
+    `${filtered.length.toLocaleString()} events: ` +
+    `${counts.c.toLocaleString()} commits, ${counts.po.toLocaleString()} PRs opened, ` +
+    `${counts.pm.toLocaleString()} PRs merged, ${counts.io.toLocaleString()} issues opened`;
+}
+
+// ============================================================
 // Render
 // ============================================================
 function render() {
@@ -818,6 +1034,9 @@ function render() {
   document.getElementById("combined-summary").textContent =
     `${combinedSeries.size} contributors, ${totals.toLocaleString()} total events in window`;
 
+  // Activity timeline scatter
+  renderScatter();
+
   // Per-repo charts (only for selected repos)
   const reposContainer = document.getElementById("per-repo-charts");
   reposContainer.innerHTML = "";
@@ -836,6 +1055,9 @@ function render() {
     .filter(([, v]) => v > 0)
     .sort((a, b) => b[1] - a[1])
     .map(([r]) => r);
+
+  document.getElementById("per-repo-count").textContent =
+    `${sortedRepos.length} repo${sortedRepos.length === 1 ? "" : "s"} with activity in window`;
 
   for (const repoName of sortedRepos) {
     const meta = STATE.data.repos.find(r => r.name === repoName);

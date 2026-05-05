@@ -13,7 +13,8 @@ Generic — works on any org. Auth is via the GitHub CLI's existing token.
 
 - [x] **Phase 1** — `fetch.py` data fetcher (local-clone based)
 - [x] **Phase 2** — `viewer.html` interactive viewer
-- [ ] **Phase 3** — polish (drill-down, exports, grouping)
+- [x] **Phase 3** — event-level activity scatter, response cache, layout polish
+- [ ] **Phase 4** — drill-down panels, CSV export, repo grouping by topic/language
 
 ## Quickstart
 
@@ -43,6 +44,11 @@ python3 fetch.py --org <ORG_LOGIN> [options]
 | `--exclude-archived` | off | skip archived repos |
 | `--no-merges` | off | exclude merge commits from counts |
 | `--only <name>` | (all) | only process named repos (repeatable) |
+| `--top-extensions <n>` | 15 | file extensions tracked literally per repo (rest in `_other`) |
+| `--no-prs-issues` | off | skip PR + issue API calls |
+| `--max-age <sec>` | 3600 | cache TTL for the org repos list and per-repo PR/issue API |
+| `--refresh` | off | ignore cache and re-fetch all API data |
+| `--no-git-fetch` | off | reuse existing bare clones without `git fetch` |
 
 ### Why local clones?
 
@@ -51,6 +57,15 @@ unreliable for large active repos — `202 Accepted` responses can persist
 for >5 minutes per repo. Local clones are deterministic, give exact line
 counts, and a typical org with ~10 repos finishes in seconds. Trade-off:
 disk space for the bare-clone cache (a few hundred MB for a busy org).
+
+### Caching
+
+API responses (org repo list, per-repo PRs, per-repo issues) are cached
+to `cache/<org>/...` for `--max-age` seconds (1 hour by default). On a
+warm cache the whole pipeline runs in seconds rather than ~minute, which
+matters when iterating on the viewer. Invalidate explicitly with
+`--refresh` (or set `--max-age 0`). Bare clones in `repos/` are also
+reused; pass `--no-git-fetch` to skip the `git fetch` step entirely.
 
 ### Identity merging (`aliases.json`)
 
@@ -139,6 +154,19 @@ Controls:
 
 Hover gives author + metric + date. Each contributor gets a stable
 color, shared across the combined chart and every per-repo chart.
+
+### Activity timeline (event scatter)
+
+Below the combined chart is an event-level scatter rendering every
+commit / PR open / PR merge / issue open as a single marker, colored
+by repo. Y axis switches between contributor and repo via the toggle
+above the chart; event types can be hidden individually. Marker size
+on commits scales with lines changed. Visualizes activity clusters
+over time at a glance.
+
+Per-repo charts are tucked into a collapsible `<details>` below the
+scatter, so the page leads with the two big-picture views and the
+small-multiples are one click away.
 
 ## License
 

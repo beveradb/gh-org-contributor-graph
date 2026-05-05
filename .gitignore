@@ -2,6 +2,7 @@ contributors.json
 aliases.json
 data/
 repos/
+cache/
 __pycache__/
 *.pyc
 .DS_Store

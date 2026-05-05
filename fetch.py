@@ -30,6 +30,7 @@ from urllib.request import Request, urlopen
 
 GITHUB_API = "https://api.github.com"
 USER_AGENT = "gh-org-contributor-graph"
+DEFAULT_CACHE_TTL = 3600  # seconds; --max-age overrides
 
 # noreply email patterns:
 #   12345+login@users.noreply.github.com   (post-2017)
@@ -116,6 +117,29 @@ def gh_paginate(path: str, token: str) -> list:
     return results
 
 
+# ---------- Disk cache for API responses ----------
+
+
+def cache_load(path: Path, max_age: float):
+    """Return cached JSON if fresh, else None."""
+    if max_age <= 0 or not path.exists():
+        return None
+    age = time.time() - path.stat().st_mtime
+    if age > max_age:
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def cache_save(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(data))
+    tmp.replace(path)
+
+
 def list_org_repos(org: str, token: str) -> list[dict]:
     return gh_paginate(f"orgs/{org}/repos?per_page=100&type=all", token)
 
@@ -134,25 +158,27 @@ def run_git(args: list[str], cwd: Path | None = None, check: bool = True):
     return r
 
 
-def ensure_clone(owner: str, repo: str, cache_dir: Path, token: str) -> Path:
+def ensure_clone(
+    owner: str, repo: str, cache_dir: Path, token: str, do_fetch: bool = True
+) -> Path:
     """Bare-clone the repo into cache_dir, or fetch if it already exists.
 
+    When do_fetch=False, an existing clone is used as-is (no `git fetch`).
     Returns the path to the bare git dir.
     """
     target = cache_dir / f"{repo}.git"
     if target.exists():
-        # Update existing mirror
+        if not do_fetch:
+            return target
         try:
             run_git(["fetch", "--all", "--prune", "--quiet"], cwd=target)
             return target
         except RuntimeError as e:
             print(f"  ! fetch failed for {repo}, re-cloning: {e}", file=sys.stderr)
-            # Fall through to fresh clone
             import shutil
 
             shutil.rmtree(target)
 
-    # Fresh bare clone via authenticated HTTPS URL
     url = f"https://x-access-token:{token}@github.com/{owner}/{repo}.git"
     cache_dir.mkdir(parents=True, exist_ok=True)
     run_git(["clone", "--bare", "--quiet", url, str(target)])
@@ -586,6 +612,28 @@ def main():
         action="store_true",
         help="skip PR + issue API calls (faster, smaller output)",
     )
+    p.add_argument(
+        "--cache-dir-api",
+        default="cache",
+        help="directory for cached API responses (default: ./cache)",
+    )
+    p.add_argument(
+        "--max-age",
+        type=int,
+        default=DEFAULT_CACHE_TTL,
+        help=f"cache age limit in seconds for the org repos list and per-repo "
+        f"PR/issue API responses (default {DEFAULT_CACHE_TTL}); set 0 to bypass",
+    )
+    p.add_argument(
+        "--refresh",
+        action="store_true",
+        help="ignore cache and re-fetch all API data (equivalent to --max-age 0)",
+    )
+    p.add_argument(
+        "--no-git-fetch",
+        action="store_true",
+        help="don't `git fetch` existing bare clones (use what's on disk)",
+    )
     args = p.parse_args()
 
     aliases: dict[str, str] = {}
@@ -602,9 +650,19 @@ def main():
 
     token = get_token()
     cache_dir = Path(args.cache_dir).resolve()
-    print(f"fetching repos for org={args.org}...")
-    repos = list_org_repos(args.org, token)
-    print(f"  {len(repos)} repos total")
+    api_cache = Path(args.cache_dir_api).resolve() / args.org
+    max_age = 0 if args.refresh else args.max_age
+
+    repos_cache = api_cache / "repos.json"
+    cached = cache_load(repos_cache, max_age)
+    if cached is not None:
+        repos = cached
+        print(f"fetching repos for org={args.org}... (cached, {len(repos)} repos)")
+    else:
+        print(f"fetching repos for org={args.org}...")
+        repos = list_org_repos(args.org, token)
+        cache_save(repos_cache, repos)
+        print(f"  {len(repos)} repos total")
 
     selected = []
     for r in repos:
@@ -627,6 +685,7 @@ def main():
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     all_stats: list[dict] = []
+    all_events: list[dict] = []
     repo_top_exts: dict[str, list[str]] = {}
     n_commits_total = 0
     for i, r in enumerate(selected, 1):
@@ -634,7 +693,9 @@ def main():
         print(f"[{i}/{len(selected)}] {r['full_name']}", flush=True)
         t0 = time.time()
         try:
-            git_dir = ensure_clone(args.org, name, cache_dir, token)
+            git_dir = ensure_clone(
+                args.org, name, cache_dir, token, do_fetch=not args.no_git_fetch
+            )
         except RuntimeError as e:
             print(f"  ! clone/fetch failed: {e}", file=sys.stderr)
             continue
@@ -653,24 +714,103 @@ def main():
         )
         repo_top_exts[name] = top_exts
 
+        # Per-event records (commits + later PRs/issues) for the scatter view
+        for c in commits:
+            uid, _ = resolve_identity(c["name"], c["email"], aliases)
+            try:
+                ts = int(
+                    datetime.fromisoformat(c["iso_date"]).astimezone(timezone.utc).timestamp()
+                )
+            except Exception:
+                continue
+            a_total = sum(f["a"] for f in c["files"])
+            d_total = sum(f["d"] for f in c["files"])
+            all_events.append(
+                {
+                    "t": "c",
+                    "r": name,
+                    "u": uid,
+                    "ts": ts,
+                    "a": a_total,
+                    "d": d_total,
+                    "sha": c["sha"][:7],
+                }
+            )
+
         n_prs = n_iss = 0
         t_api = 0.0
+        cache_hits = []
         if not args.no_prs_issues:
             t0 = time.time()
+            prs_path = api_cache / name / "prs.json"
+            issues_path = api_cache / name / "issues.json"
+            cached_prs = cache_load(prs_path, max_age)
+            cached_issues = cache_load(issues_path, max_age)
             try:
-                prs = fetch_prs(args.org, name, token)
-                issues = fetch_issues(args.org, name, token)
+                if cached_prs is not None:
+                    prs = cached_prs
+                    cache_hits.append("prs")
+                else:
+                    prs = fetch_prs(args.org, name, token)
+                    cache_save(prs_path, prs)
+                if cached_issues is not None:
+                    issues = cached_issues
+                    cache_hits.append("issues")
+                else:
+                    issues = fetch_issues(args.org, name, token)
+                    cache_save(issues_path, issues)
             except RuntimeError as e:
                 print(f"  ! PR/issue fetch failed: {e}", file=sys.stderr)
                 prs, issues = [], []
             t_api = time.time() - t0
             apply_pr_issue_to_rows(rows, name, prs, issues, aliases)
+            for pr in prs:
+                login = (pr.get("login") or "").lower()
+                if not login:
+                    continue
+                uid = aliases.get(login, login)
+                if pr.get("created_at"):
+                    try:
+                        ts = int(
+                            datetime.fromisoformat(
+                                pr["created_at"].replace("Z", "+00:00")
+                            ).timestamp()
+                        )
+                        all_events.append({"t": "po", "r": name, "u": uid, "ts": ts})
+                    except Exception:
+                        pass
+                if pr.get("merged_at"):
+                    try:
+                        ts = int(
+                            datetime.fromisoformat(
+                                pr["merged_at"].replace("Z", "+00:00")
+                            ).timestamp()
+                        )
+                        all_events.append({"t": "pm", "r": name, "u": uid, "ts": ts})
+                    except Exception:
+                        pass
+            for iss in issues:
+                login = (iss.get("login") or "").lower()
+                if not login or not iss.get("created_at"):
+                    continue
+                uid = aliases.get(login, login)
+                try:
+                    ts = int(
+                        datetime.fromisoformat(
+                            iss["created_at"].replace("Z", "+00:00")
+                        ).timestamp()
+                    )
+                    all_events.append({"t": "io", "r": name, "u": uid, "ts": ts})
+                except Exception:
+                    pass
             n_prs, n_iss = len(prs), len(issues)
 
         all_stats.extend(rows)
         n_commits_total += len(commits)
         extra = (
-            f", api {t_api:.1f}s, {n_prs} PRs, {n_iss} issues"
+            f", api {t_api:.1f}s"
+            + (f" [cache: {','.join(cache_hits)}]" if cache_hits else "")
+            + f", {n_prs} PRs, {n_iss} issues"
             if not args.no_prs_issues
             else ""
         )
@@ -694,6 +834,7 @@ def main():
         "repos": [repo_meta(r) for r in selected],
         "repo_top_extensions": repo_top_exts,
         "stats": all_stats,
+        "events": sorted(all_events, key=lambda e: e["ts"]),
     }
 
     out_path = Path(args.output)

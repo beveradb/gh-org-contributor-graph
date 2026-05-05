@@ -1,0 +1,9 @@
+{
+  "_doc": "Map any author email, github noreply login, or git committer name (all matched case-insensitively) to a canonical id (typically a GitHub login). The fetcher merges all matching identities into one row per canonical id. Copy to aliases.json and edit. To deduce logins, hit `gh api repos/<owner>/<repo>/commits/<sha> --jq .author.login` for any commit by an unknown identity.",
+
+  "alice@personal.com": "alice-gh",
+  "alice@work.com": "alice-gh",
+  "old-username": "alice-gh",
+
+  "ci@example.com": "ci-bot"
+}
